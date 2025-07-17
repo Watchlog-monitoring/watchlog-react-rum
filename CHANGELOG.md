@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.0...1.1.1) (2025-07-17)
+
+
+### Bug Fixes
+
+* add initial release of react RUM SDK with route tracking ([a85e199](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/a85e1997e2fb6ab8415d1a325204c7c8433d66d4))
+
 # [1.1.0](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.0.0...1.1.0) (2025-07-17)
 
 
