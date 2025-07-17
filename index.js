@@ -2,12 +2,13 @@ let buffer = []
 let meta = {}
 let flushedOnExit = false
 let currentNormalizedPath = window.location.pathname
-let sentPageView = false // ✅ جلوگیری از تکرار
+let sentPageView = false
+let recentErrors = new Set()
 
 const WatchlogRUM = {
   init(config) {
-    if (!config.apiKey || !config.endpoint) {
-      console.warn('[Watchlog RUM] apiKey و endpoint الزامی‌اند.')
+    if (!config.apiKey || !config.endpoint || !config.app) {
+      console.warn('[Watchlog RUM] apiKey، endpoint و app الزامی هستند.')
       return
     }
 
@@ -16,84 +17,60 @@ const WatchlogRUM = {
       userAgent: navigator.userAgent,
       language: navigator.language,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      apiKey: config.apiKey
+      apiKey: config.apiKey,
+      app: config.app
     }
 
-    window.__watchlog_startTime = Date.now()
-
-    window.addEventListener('beforeunload', () => {
-      if (!flushedOnExit) {
-        flushedOnExit = true
-        this.bufferEvent({
-          type: 'session_end',
-          path: window.location.pathname,
-          duration: Math.round((Date.now() - window.__watchlog_startTime) / 1000)
-        })
-        this.flush(true)
-      }
-    })
-
-    // document.addEventListener('visibilitychange', () => {
-    //   if (document.visibilityState === 'hidden' && !flushedOnExit) {
-    //     flushedOnExit = true
-    //     this.bufferEvent({
-    //       type: 'session_end',
-    //       path: window.location.pathname,
-    //       duration: Math.round((Date.now() - window.__watchlog_startTime) / 1000)
-    //     })
-    //     this.flush(true)
-    //   }
-    // })
-
-    document.addEventListener('click', (e) => {
-      const target = e.target.closest('[data-watchlog]')
-      if (target) {
-        this.bufferEvent({
-          type: 'interaction',
-          event: 'click',
-          label: target.getAttribute('data-watchlog')
-        })
-      }
-    })
-
-    const pushState = history.pushState
-    history.pushState = function () {
-      pushState.apply(this, arguments)
-      window.dispatchEvent(new Event('locationchange'))
-    }
-    window.addEventListener('popstate', () => window.dispatchEvent(new Event('locationchange')))
-
-    setInterval(() => this.flush(), config.flushInterval || 10000)
-    this.debug = config.debug
+    this.debug = config.debug || false
     this.endpoint = config.endpoint
+    this.flushInterval = config.flushInterval || 10000
+
+    setInterval(() => this.flush(), this.flushInterval)
   },
 
   setNormalizedPath(path) {
     currentNormalizedPath = path
+    if (this.debug) console.log('[Watchlog RUM] Normalized path set:', path)
   },
 
   bufferEvent(event) {
-    buffer.push({
+    const fullEvent = {
       ...meta,
       ...event,
-      normalizedPath: currentNormalizedPath,
+      normalizedPath: event.normalizedPath || currentNormalizedPath,
       timestamp: Date.now()
-    })
+    }
 
-    if (this.debug) console.log('[Watchlog RUM] Buffered:', event)
+    if (event.type === 'error') {
+      const key = `${event.event}:${event.label}`
+      if (recentErrors.has(key)) return
+      recentErrors.add(key)
+      setTimeout(() => recentErrors.delete(key), 3000)
+    }
+
+    buffer.push(fullEvent)
+
+    if (this.debug) console.log('[Watchlog RUM] Buffered:', fullEvent)
     if (buffer.length >= 10) this.flush()
   },
 
   custom(metric, value = 1) {
     if (typeof metric !== 'string') return
-    this.bufferEvent({ type: 'custom', metric, value })
+    this.bufferEvent({
+      type: 'custom',
+      metric,
+      value
+    })
   },
 
   flush(sync = false) {
     if (buffer.length === 0) return
+
     const events = [...buffer]
     buffer = []
+
     const payload = JSON.stringify(events)
+
     try {
       if (sync && navigator.sendBeacon) {
         navigator.sendBeacon(this.endpoint, payload)

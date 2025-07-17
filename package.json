@@ -1,30 +1,40 @@
 {
   "name": "watchlog-react-rum",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Real User Monitoring (RUM) SDK for React apps using Watchlog.",
-  "license": "MIT",
-  "author": "Watchlog",
-  "type": "module",
-  "main": "index.js",
+  "main": "src/index.js",
+  "module": "src/index.js",
   "exports": {
-    ".": {
-      "import": "./index.js"
-    }
+    ".": "./src/index.js",
+    "./useWatchlogRUM": "./src/useWatchlogRUM.js",
+    "./WatchlogProvider": "./src/WatchlogProvider.jsx"
   },
   "keywords": [
-    "rum",
-    "react",
     "watchlog",
-    "monitoring",
-    "performance",
-    "analytics",
-    "sdk"
+    "rum",
+    "real-user-monitoring",
+    "react"
   ],
+  "author": "Mohammadreza",
   "repository": {
     "type": "git",
     "url": "https://github.com/Watchlog-monitoring/watchlog-react-rum"
   },
-  "scripts": {
-    "test": "echo \"No tests specified\" && exit 0"
+  "bugs": {
+    "url": "https://github.com/Watchlog-monitoring/watchlog-react-rum/issues"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14",
+    "npm": ">=6"
+  },
+  "peerDependencies": {
+    "react": "^17.0.0 || ^18.0.0",
+    "react-router-dom": "^6.0.0"
   }
 }

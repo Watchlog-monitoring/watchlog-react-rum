@@ -1,53 +1,29 @@
 import { useEffect, useRef } from 'react'
-import { useMatches } from 'react-router-dom'
+import { useLocation, useMatches, useParams } from 'react-router-dom'
 import WatchlogRUM from './index.js'
 
 function useWatchlogRUM() {
+  const location = useLocation()
   const matches = useMatches()
+  const params = useParams()
+  const path = location.pathname
+  const prevPathRef = useRef(null)
   const sentRef = useRef(false)
-  const prevPathRef = useRef(window.location.pathname)
 
-  let normalized = window.location.pathname
-
+  let normalizedPath = path
   if (matches.length > 0) {
     const last = matches[matches.length - 1]
-    let fullPath = last.pathname
-
-    Object.entries(last.params || {}).forEach(([key, value]) => {
-      fullPath = fullPath.replace(value, `:${key}`)
+    let routePath = last.route?.path || path
+    Object.entries(params).forEach(([key, value]) => {
+      routePath = routePath.replace(value, `:${key}`)
     })
-
-    normalized = fullPath
+    normalizedPath = routePath.startsWith('/') ? routePath : '/' + routePath
   }
 
   useEffect(() => {
-    WatchlogRUM.setNormalizedPath(normalized)
-
-    const path = window.location.pathname
-
-    if (!sentRef.current) {
-      sentRef.current = true
-
-      WatchlogRUM.bufferEvent({ type: 'session_start', path })
-
-      const nav = performance.getEntriesByType('navigation')[0]
-      if (nav && !WatchlogRUM._pageViewSent) {
-        WatchlogRUM._pageViewSent = true
-        WatchlogRUM.bufferEvent({
-          type: 'page_view',
-          path,
-          ttfb: nav.responseStart,
-          domLoad: nav.domContentLoadedEventEnd,
-          fullLoad: nav.loadEventEnd
-        })
-      }
-    } else if (prevPathRef.current !== path) {
-      WatchlogRUM.bufferEvent({ type: 'route_change', path })
-      WatchlogRUM.bufferEvent({ type: 'page_view', path })
-    }
-
+    WatchlogRUM.setNormalizedPath(normalizedPath)
     prevPathRef.current = path
-  }, [normalized])
+  }, [normalizedPath])
 }
 
 export default useWatchlogRUM
