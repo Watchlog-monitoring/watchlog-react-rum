@@ -1,3 +1,19 @@
+# [1.1.0](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.0.0...1.1.0) (2025-07-17)
+
+
+### Bug Fixes
+
+* update files in package.json ([466fd56](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/466fd566f40563bdbfc8ef0bbf6aec7d91d7af46))
+* update package.json ([371a4f2](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/371a4f2eb6b376fcf5160310b648be36d7dff2bc))
+* update package.json ([d055427](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/d05542797b0387e5cdde5159ef6235710204d8b5))
+* update package.json ([2e8e70f](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/2e8e70ffb93d68a3d5251c20e383ed9b33b08588))
+* update package.json ([f3eeb5b](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/f3eeb5b9cb1d25c237f71a691f7e706f322ac5c1))
+
+
+### Features
+
+* add initial release of react RUM SDK with route tracking and error handling ([33aa5a5](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/33aa5a53790b1db103193a3f51f73da8496db310))
+
 # 1.0.0 (2025-07-17)
 
 
