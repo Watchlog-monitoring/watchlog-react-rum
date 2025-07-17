@@ -1,6 +1,6 @@
 {
   "name": "watchlog-react-rum",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Real User Monitoring (RUM) SDK for React apps using Watchlog.",
   "main": "src/index.js",
   "module": "src/index.js",
@@ -25,10 +25,6 @@
   },
   "license": "MIT",
   "sideEffects": false,
-  "files": [
-    "src",
-    "README.md"
-  ],
   "engines": {
     "node": ">=14",
     "npm": ">=6"
