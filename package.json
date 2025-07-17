@@ -1,6 +1,6 @@
 {
   "name": "watchlog-react-rum",
-  "version": "0.2.3",
+  "version": "1.1.1",
   "description": "Real User Monitoring (RUM) SDK for React apps using Watchlog.",
   "main": "index.js",
   "module": "index.js",
