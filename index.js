@@ -54,6 +54,7 @@ function registerListeners(config) {
     console.warn('[Watchlog RUM] apiKey, endpoint, and app are required.');
     return false;
   }
+  const initialNormalizedPath = meta.normalizedPath || window.location.pathname;
 
   // Initialize meta
   meta = {
@@ -63,7 +64,7 @@ function registerListeners(config) {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     apiKey,
     app,
-    normalizedPath: '',
+    normalizedPath: initialNormalizedPath,
   };
 
   // Assign config
@@ -186,7 +187,7 @@ export function useWatchlogRUM(config) {
     if (!initialized.current) {
       sessionStartTime = Date.now();
       bufferEvent({ type: 'session_start', path: pathname, normalizedPath });
-      bufferEvent({ type: 'page_view',  path: pathname, normalizedPath });
+      bufferEvent({ type: 'page_view', path: pathname, normalizedPath });
       capturePerformance(pathname, normalizedPath);
       initialized.current = true;
       lastPageViewPath = normalizedPath;
