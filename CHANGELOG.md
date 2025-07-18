@@ -1,3 +1,10 @@
+## [1.1.3](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.2...1.1.3) (2025-07-18)
+
+
+### Bug Fixes
+
+* handle errors in route ([5ccf5eb](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/5ccf5ebaf9e586de8da31186b146401f0cf3ba0f))
+
 ## [1.1.2](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.1...1.1.2) (2025-07-18)
 
 
