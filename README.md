@@ -1,19 +1,18 @@
 # Watchlog React RUM
 
-📊 A lightweight and production-ready Real User Monitoring (RUM) SDK for React apps powered by **[Watchlog](https://watchlog.io)**.
+📊 A lightweight, production-ready Real User Monitoring (RUM) SDK for React apps, powered by **Watchlog**.
 
-Track route changes, page views, session durations, custom events, JavaScript errors, and page load performance — with just one component.
+Automatically track SPA route changes, session durations, page views, custom events, and JavaScript errors — with a single React hook.
 
 ---
 
 ## ✨ Features
 
-- 📍 Tracks **normalized routes** automatically (e.g. `/users/:id`, `/products/:slug`)
-- ⚡ Captures page performance metrics: `ttfb`, `domLoad`, `load`
-- 🔁 Tracks **SPA route changes** with React Router v6+
-- 🧠 Sends events: `session_start`, `route_change`, `page_view`, `session_end`, `custom`, and `error`
-- 🛠 Auto-captures `window.onerror` and `unhandledrejection`
-- 💬 Minimal API surface with a single `<WatchlogProvider />`
+* 📍 **Normalized dynamic routes**: automatically transforms routes like `/users/123` into `/users/:id`.
+* 🔁 **SPA route tracking**: emits `page_view` on every React Router v6+ navigation.
+* 🧠 **Event types**: `session_start`, `page_view`, `session_end`, `custom`, and `error`.
+* ⚠️ **Error monitoring**: auto-captures `window.onerror` and `unhandledrejection`.
+* 🔄 **Minimal API**: setup via one hook, plus manual control if needed.
 
 ---
 
@@ -25,75 +24,74 @@ npm install watchlog-react-rum
 
 ---
 
-## ⚙️ Setup
+## ⚙️ Usage
 
-### 1. Initialize the SDK
+### Hook-based setup (recommended)
 
-Inside your app entry (e.g. `main.jsx` or `App.jsx`):
+Use the `useWatchlogRUM` hook in your app’s root component to initialize and auto-track:
+
+```jsx
+// src/main.jsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { RouterProvider } from 'react-router-dom';
+import router from './routes';
+import { useWatchlogRUM } from 'watchlog-react-rum';
+
+function Root() {
+  useWatchlogRUM({
+    apiKey: 'YOUR_API_KEY',
+    endpoint: 'https://your-endpoint.com/rum',
+    app: 'your-app-name',
+    debug: false,
+    flushInterval: 5000, // ms
+  });
+
+  return <RouterProvider router={router} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+```
+
+This will automatically send:
+
+1. `session_start` on first load (with normalized path)
+2. `page_view` on every route change
+3. `session_end` on unload
+4. `error` for uncaught JS errors and unhandled promise rejections
+
+### Manual API (optional)
+
+If you prefer manual setup, import and initialize the core SDK directly:
 
 ```js
-import WatchlogRUM from 'watchlog-react-rum'
+import WatchlogRUM from 'watchlog-react-rum';
 
+// Initialize once at app startup
 WatchlogRUM.init({
-  apiKey: 'your-api-key',
-  endpoint: 'https://your-server.com/rum',
+  apiKey: 'YOUR_API_KEY',
+  endpoint: 'https://your-endpoint.com/rum',
   app: 'your-app-name',
-  debug: false
-})
+  debug: true,
+  flushInterval: 10000,
+});
+
+// Send a custom metric anywhere
+WatchlogRUM.custom('button_clicked', 1);
+
+// Flush buffered events (e.g. before manual unload)
+WatchlogRUM.flush(true);
 ```
 
 ---
 
-### 2. Wrap your app with `<WatchlogProvider />`
+## 📦 Exports
 
-Place it at the top of your app layout (must be within `RouterProvider`):
-
-```jsx
-import { Outlet } from 'react-router-dom'
-import WatchlogProvider from 'watchlog-react-rum/WatchlogProvider'
-
-function Layout() {
-  return (
-    <>
-      <WatchlogProvider />
-      <Outlet />
-    </>
-  )
-}
-```
+| Module                                                | Description                                        |
+| ----------------------------------------------------- | -------------------------------------------------- |
+| `import WatchlogRUM from 'watchlog-react-rum'`        | Core SDK: `init`, `bufferEvent`, `custom`, `flush` |
+| `import { useWatchlogRUM } from 'watchlog-react-rum'` | React hook for auto SPA tracking                   |
 
 ---
 
-## 🧩 Optional: Manual tracking per route
-
-If you want to manually control tracking instead of using `<WatchlogProvider />`, you can use the hook:
-
-```jsx
-import useWatchlogRUM from 'watchlog-react-rum/useWatchlogRUM'
-
-function MyPage() {
-  useWatchlogRUM()
-
-  return <div>...</div>
-}
-```
-
----
-
-## 📬 Custom Events
-
-```js
-WatchlogRUM.custom('button_clicked', 1)
-```
-
----
-
-## 📦 Exported Modules
-
-| Import | Description |
-|--------|-------------|
-| `watchlog-react-rum` | Core SDK (`init`, `bufferEvent`, `custom`, `flush`) |
-| `watchlog-react-rum/WatchlogProvider` | React component with full auto tracking |
-| `watchlog-react-rum/useWatchlogRUM` | Hook for manual usage per route |
-
----
+Made with ❤️ by Watchlog team | [watchlog.io](https://watchlog.io)
