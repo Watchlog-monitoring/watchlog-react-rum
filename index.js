@@ -1,4 +1,4 @@
-// watchlog-rum/index.js
+// src/lib/watchlog-rum/index.js
 import { useEffect, useRef } from 'react';
 import { useLocation, useMatches, useParams } from 'react-router-dom';
 
@@ -7,9 +7,8 @@ let buffer = [];
 let meta = {};
 let flushTimer;
 let sessionStartTime;
-let sessionStarted = false;
 let lastPageViewPath = null;
-let lastPageViewTime = 0;
+let _recentErrors = new Set();
 
 // Global error handlers
 function onErrorGlobal(e) {
@@ -33,6 +32,22 @@ function onRejectionGlobal(e) {
   });
 }
 
+// Capture page performance metrics
+function capturePerformance(pathname, normalizedPath) {
+  try {
+    const timing = window.performance.timing;
+    const metrics = {
+      ttfb: timing.responseStart - timing.requestStart,
+      domLoad: timing.domContentLoadedEventEnd - timing.navigationStart,
+      load: timing.loadEventEnd - timing.navigationStart,
+    };
+    bufferEvent({ type: 'performance', metrics, path: pathname, normalizedPath });
+  } catch {
+    // ignore
+  }
+}
+
+// Core SDK methods
 function registerListeners(config) {
   const { apiKey, endpoint, app, debug = false, flushInterval = 10000 } = config;
   if (!apiKey || !endpoint || !app) {
@@ -54,9 +69,8 @@ function registerListeners(config) {
   // Assign config
   WatchlogRUM.debug = debug;
   WatchlogRUM.endpoint = endpoint;
-  WatchlogRUM.flushInterval = flushInterval;
 
-  // Register global listeners only once
+  // Register global listeners once
   if (!window.__watchlog_listeners_registered) {
     window.addEventListener('error', onErrorGlobal);
     window.addEventListener('unhandledrejection', onRejectionGlobal);
@@ -88,10 +102,9 @@ function handleBeforeUnload() {
 function bufferEvent(event) {
   if (event.type === 'error') {
     const key = `${event.event}:${event.label}`;
-    if (!WatchlogRUM._recentErrors) WatchlogRUM._recentErrors = new Set();
-    if (WatchlogRUM._recentErrors.has(key)) return;
-    WatchlogRUM._recentErrors.add(key);
-    setTimeout(() => WatchlogRUM._recentErrors.delete(key), 3000);
+    if (_recentErrors.has(key)) return;
+    _recentErrors.add(key);
+    setTimeout(() => _recentErrors.delete(key), 3000);
   }
 
   buffer.push({ ...meta, ...event, timestamp: Date.now() });
@@ -101,7 +114,10 @@ function bufferEvent(event) {
 
 function custom(metric, value = 1) {
   if (typeof metric !== 'string') return;
-  bufferEvent({ type: 'custom', metric, value });
+  const path = window.location.pathname;
+  const normalizedPath = meta.normalizedPath;
+  bufferEvent({ type: 'custom', metric, value, path, normalizedPath });
+  flush();
 }
 
 function flush(sync = false) {
@@ -128,52 +144,89 @@ function flush(sync = false) {
   }
 }
 
-const WatchlogRUM = { init: registerListeners, setNormalizedPath: (p) => (meta.normalizedPath = p), bufferEvent, custom, flush };
+// Export core SDK
+const WatchlogRUM = {
+  init: registerListeners,
+  setNormalizedPath: (p) => (meta.normalizedPath = p),
+  bufferEvent,
+  custom,
+  flush,
+};
 
+// React hook for SPA tracking
 export function useWatchlogRUM(config) {
   const location = useLocation();
   const matches = useMatches();
   const params = useParams();
   const initialized = useRef(false);
 
-  // Register listeners once
+  // compute normalizedPath synchronously
+  let routePath = matches.length
+    ? matches[matches.length - 1]?.route?.path || location.pathname
+    : location.pathname;
+  Object.entries(params).forEach(([k, v]) => {
+    routePath = routePath.replace(v, `:${k}`);
+  });
+  const normalizedPath = routePath.startsWith('/')
+    ? routePath
+    : `/${routePath}`;
+  // update meta for everything that follows
+  meta.normalizedPath = normalizedPath;
+
+  // init SDK once
   useEffect(() => {
     registerListeners(config);
   }, []);
 
-  // Handle initial load and route changes
+  // page_view & error tracking per route
   useEffect(() => {
     const pathname = location.pathname;
 
-    // Compute normalized path
-    let routePath = matches.length ? matches[matches.length - 1]?.route?.path || pathname : pathname;
-    Object.entries(params).forEach(([key, value]) => {
-      routePath = routePath.replace(value, `:${key}`);
-    });
-    const normalizedPath = routePath.startsWith('/') ? routePath : `/${routePath}`;
-
-    // Update meta normalizedPath
-    meta.normalizedPath = normalizedPath;
-
-    // Session start & first page_view on initial load
+    // first load
     if (!initialized.current) {
-      sessionStarted = true;
       sessionStartTime = Date.now();
       bufferEvent({ type: 'session_start', path: pathname, normalizedPath });
-      bufferEvent({ type: 'page_view', path: pathname, normalizedPath });
-      if (WatchlogRUM.debug) console.log('[Watchlog RUM] Session started & page_view:', meta.sessionId);
+      bufferEvent({ type: 'page_view',  path: pathname, normalizedPath });
+      capturePerformance(pathname, normalizedPath);
       initialized.current = true;
       lastPageViewPath = normalizedPath;
-      lastPageViewTime = Date.now();
       return;
     }
 
-    // Page view only if route changed
+    // on route change
     if (normalizedPath !== lastPageViewPath) {
       bufferEvent({ type: 'page_view', path: pathname, normalizedPath });
+      capturePerformance(pathname, normalizedPath);
       lastPageViewPath = normalizedPath;
-      lastPageViewTime = Date.now();
     }
+
+    // **per-route error handlers****
+    const handleError = (e) => {
+      console.log(normalizedPath)
+      bufferEvent({
+        type: 'error',
+        event: 'window_error',
+        label: e.message || 'error',
+        stack: e.error?.stack,
+        path: pathname,
+        normalizedPath,
+      });
+    };
+    const handleRejection = (e) => {
+      bufferEvent({
+        type: 'error',
+        event: 'unhandled_promise',
+        label: e.reason?.message || String(e.reason),
+        path: pathname,
+        normalizedPath,
+      });
+    };
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleRejection);
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleRejection);
+    };
   }, [location.pathname]);
 }
 
