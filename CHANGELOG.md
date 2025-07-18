@@ -1,3 +1,10 @@
+## [1.1.4](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.3...1.1.4) (2025-07-18)
+
+
+### Bug Fixes
+
+* handle normalizepath ([63257cc](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/63257cc3da4b9c18fffbc2454009f99210a963b8))
+
 ## [1.1.3](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.2...1.1.3) (2025-07-18)
 
 
