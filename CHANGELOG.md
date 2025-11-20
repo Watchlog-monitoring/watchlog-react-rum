@@ -1,50 +1,42 @@
-## [1.1.4](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.3...1.1.4) (2025-07-18)
+# Changelog
 
+All notable changes to `watchlog-react-rum` will be documented in this file.
 
-### Bug Fixes
+## [0.3.0] - 2024-12-XX
 
-* handle normalizepath ([63257cc](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/63257cc3da4b9c18fffbc2454009f99210a963b8))
+### Added
+- **Comprehensive RUM SDK**: Complete rewrite to match `watchlog-vue-rum` v0.3.0 capabilities
+- **Enhanced Context Collection**: Full device info, browser/OS detection, connection info, memory info, color scheme
+- **Breadcrumbs System**: Automatic event breadcrumbs for debugging (configurable, max 100)
+- **Network Tracking**: Automatic fetch/XHR interception with detailed timing and size information
+- **Web Vitals**: Full support for CLS, LCP, INP, TTFB, FID (via web-vitals package)
+- **Long Tasks Detection**: Track JavaScript tasks >50ms blocking the main thread
+- **Resource Timing**: Track all resource loads (images, scripts, stylesheets) with detailed metrics
+- **User Interaction Tracking**: Click, scroll, and form submission tracking (sampled)
+- **Enhanced Performance Capture**: Complete navigation timing breakdown (DNS, TCP, request, response, processing, load)
+- **Paint Metrics**: First Paint (FP) and First Contentful Paint (FCP) tracking
+- **Error Context**: React component name and props in error context
+- **Sample Rate Cap**: Maximum `sampleRate` of 0.5 (50%) to prevent server overload
+- **Normalized Routes**: Automatic route normalization (e.g., `/users/123` → `/users/:id`)
 
-## [1.1.3](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.2...1.1.3) (2025-07-18)
+### Changed
+- **SDK Version**: Updated to `0.3.0` to match Vue RUM SDK
+- **SDK Name**: Changed from `watchlog-rum-react` to `watchlog-rum-react` in wrapper payload
+- **Buffer Size**: Increased from 10 to 50 events
+- **Error Deduplication**: Increased window from 3s to 5s
+- **Event Format**: Complete alignment with Vue RUM SDK event structure
+- **Context Structure**: Full alignment with Vue RUM SDK context format
 
+### Fixed
+- **Route Normalization**: Improved React Router v6 route pattern matching
+- **Session/Device IDs**: Proper generation and persistence in localStorage
+- **Error Handling**: Enhanced error capture with React component context
 
-### Bug Fixes
+### Breaking Changes
+- **API Changes**: Complete rewrite - see README for new usage
+- **Hook API**: `useWatchlogRUM` now requires React Router v6 (`useLocation`, `useMatches`, `useParams`)
+- **Event Structure**: Event format changed to match Vue RUM SDK (backward incompatible)
 
-* handle errors in route ([5ccf5eb](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/5ccf5ebaf9e586de8da31186b146401f0cf3ba0f))
+## [1.1.5] - Previous Version
 
-## [1.1.2](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.1...1.1.2) (2025-07-18)
-
-
-### Bug Fixes
-
-* fix bug and error handle ([8185ace](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/8185aceca82cde058b19086c3ca72324335a7bd4))
-
-## [1.1.1](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.0...1.1.1) (2025-07-17)
-
-
-### Bug Fixes
-
-* add initial release of react RUM SDK with route tracking ([a85e199](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/a85e1997e2fb6ab8415d1a325204c7c8433d66d4))
-
-# [1.1.0](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.0.0...1.1.0) (2025-07-17)
-
-
-### Bug Fixes
-
-* update files in package.json ([466fd56](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/466fd566f40563bdbfc8ef0bbf6aec7d91d7af46))
-* update package.json ([371a4f2](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/371a4f2eb6b376fcf5160310b648be36d7dff2bc))
-* update package.json ([d055427](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/d05542797b0387e5cdde5159ef6235710204d8b5))
-* update package.json ([2e8e70f](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/2e8e70ffb93d68a3d5251c20e383ed9b33b08588))
-* update package.json ([f3eeb5b](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/f3eeb5b9cb1d25c237f71a691f7e706f322ac5c1))
-
-
-### Features
-
-* add initial release of react RUM SDK with route tracking and error handling ([33aa5a5](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/33aa5a53790b1db103193a3f51f73da8496db310))
-
-# 1.0.0 (2025-07-17)
-
-
-### Features
-
-* initial rum package for react ([7899142](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/789914288631ec7d29e744c4667f2273db4daefe))
+Initial React RUM SDK implementation (basic features only).

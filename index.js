@@ -1,234 +1,1305 @@
-// src/lib/watchlog-rum/index.js
-import { useEffect, useRef } from 'react';
-import { useLocation, useMatches, useParams } from 'react-router-dom';
+// React + React Router v6 - Comprehensive RUM SDK
+// Compatible with watchlog-vue-rum v0.3.0
+import { useEffect, useRef } from 'react'
+import { useLocation, useMatches, matchRoutes } from 'react-router-dom'
 
-// Internal state
-let buffer = [];
-let meta = {};
-let flushTimer;
-let sessionStartTime;
-let lastPageViewPath = null;
-let _recentErrors = new Set();
+// Import route definitions getter (if using wrapped router functions)
+// This allows computeNormalizedPath to access route definitions for accurate pattern extraction
+// Similar to how Datadog tracks route definitions
+let getRouteDefinitions = null
 
-// Global error handlers
-function onErrorGlobal(e) {
-  bufferEvent({
-    type: 'error',
-    event: 'window_error',
-    label: e.message || 'error',
-    stack: e.error?.stack,
-    path: window.location.pathname,
-    normalizedPath: meta.normalizedPath,
-  });
-}
-
-function onRejectionGlobal(e) {
-  bufferEvent({
-    type: 'error',
-    event: 'unhandled_promise',
-    label: e.reason?.message || String(e.reason),
-    path: window.location.pathname,
-    normalizedPath: meta.normalizedPath,
-  });
-}
-
-// Capture page performance metrics
-function capturePerformance(pathname, normalizedPath) {
+// Try to dynamically import the router wrapper module
+// We use a lazy initialization pattern to avoid issues if the module isn't available
+function initRouteDefinitionsGetter() {
+  if (getRouteDefinitions !== null) return // Already initialized
+  
   try {
-    const timing = window.performance.timing;
-    const metrics = {
-      ttfb: timing.responseStart - timing.requestStart,
-      domLoad: timing.domContentLoadedEventEnd - timing.navigationStart,
-      load: timing.loadEventEnd - timing.navigationStart,
-    };
-    bufferEvent({ type: 'performance', metrics, path: pathname, normalizedPath });
-  } catch {
-    // ignore
+    // Try to access the global route definitions store
+    // The react-router-v6.js wrapper will set this when createBrowserRouter is called
+    if (typeof window !== 'undefined' && window.__watchlog_rum_route_definitions__) {
+      getRouteDefinitions = () => window.__watchlog_rum_route_definitions__
+      return
+    }
+  } catch (e) {
+    // Ignore
   }
+  
+  // Fallback: return null if route definitions not available
+  getRouteDefinitions = () => null
 }
 
-// Core SDK methods
-function registerListeners(config) {
-  const { apiKey, endpoint, app, debug = false, flushInterval = 10000 } = config;
-  if (!apiKey || !endpoint || !app) {
-    console.warn('[Watchlog RUM] apiKey, endpoint, and app are required.');
-    return false;
-  }
-  const initialNormalizedPath = meta.normalizedPath || window.location.pathname;
+// ===== Internal state =====
+let buffer = []
+let meta = {}
+let flushTimer
+let sessionStartTime
+let lastPageViewPath = null
+let _recentErrors = new Set()
+let _seq = 0
+let _breadcrumbs = []
+let _maxBreadcrumbs = 100
 
-  // Initialize meta
-  meta = {
-    sessionId: 'sess-' + Math.random().toString(36).substring(2, 10),
-    userAgent: navigator.userAgent,
-    language: navigator.language,
+// feature flags / config
+let _config = {
+  app: '',
+  apiKey: '',
+  endpoint: '',
+  environment: 'prod',
+  release: null,
+  debug: false,
+  flushInterval: 10000,
+  sampleRate: 1.0,            // session sampling (0..1)
+  networkSampleRate: 0.1,       // network sampling (0..1)
+  interactionSampleRate: 0.1,  // user interaction sampling (0..1)
+  enableWebVitals: true,
+  autoTrackInitialView: true,
+  captureLongTasks: true,
+  captureFetch: true,
+  captureXHR: true,
+  captureUserInteractions: false, // clicks, scrolls (sampled)
+  captureBreadcrumbs: true,
+  maxBreadcrumbs: 100,
+  beforeSend: (ev) => ev      // ev -> ev | null
+}
+let _sessionDropped = false
+let _listenersInstalled = false
+let _sdkInitialized = false
+let _fetchPatched = false
+let _xhrPatched = false
+let _resObserver = null
+let _ltObserver = null
+let _paintObserver = null
+let _interactionListeners = []
+
+// ===== Helpers =====
+const now = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+function safeWin() { try { return typeof window !== 'undefined' ? window : null } catch { return null } }
+
+function computeNormalizedPath(location, matches, params) {
+  const pathname = location?.pathname || '/'
+  
+  // Initialize route definitions getter if not already done
+  if (getRouteDefinitions === null) {
+    initRouteDefinitionsGetter()
+  }
+  
+  // Try to get route pattern from route definitions using matchRoutes (like Datadog)
+  // This is the most accurate way to get the exact route pattern
+  const routeDefinitions = getRouteDefinitions ? getRouteDefinitions() : null
+  if (routeDefinitions && Array.isArray(routeDefinitions)) {
+    try {
+      const matchedRoutes = matchRoutes(routeDefinitions, pathname)
+      if (matchedRoutes && matchedRoutes.length > 0) {
+        // Build normalized path from route definitions (exactly like Datadog does)
+        let normalized = ''
+        for (let i = 0; i < matchedRoutes.length; i++) {
+          const match = matchedRoutes[i]
+          const routePath = match.route.path
+          if (!routePath) continue
+          
+          if (routePath.startsWith('/')) {
+            normalized = routePath
+          } else {
+            normalized = normalized.endsWith('/') 
+              ? normalized + routePath 
+              : normalized + '/' + routePath
+          }
+        }
+        
+        if (normalized) {
+          return normalized.startsWith('/') ? normalized : `/${normalized}`
+        }
+      }
+    } catch (e) {
+      // If matchRoutes fails, fall back to params-based reconstruction
+    }
+  }
+  
+  // Fallback: reconstruct from pathname and params (when route definitions not available)
+  // Get params from the most specific match (last one in matches array)
+  let effectiveParams = params || {}
+  if (matches && matches.length > 0) {
+    const lastMatch = matches[matches.length - 1]
+    if (lastMatch?.params && Object.keys(lastMatch.params).length > 0) {
+      effectiveParams = lastMatch.params
+    }
+  }
+  
+  // If no params, return pathname as-is (static route)
+  if (!effectiveParams || Object.keys(effectiveParams).length === 0) {
+    return pathname
+  }
+  
+  // Reconstruct route pattern by replacing param values with :paramName
+  // This preserves the exact param names from route definition
+  let normalized = pathname
+  
+  // Split pathname into segments for more precise replacement
+  const segments = pathname.split('/').filter(s => s !== '')
+  
+  // Create a map of param values to param names for quick lookup
+  const paramValueToName = new Map()
+  Object.entries(effectiveParams).forEach(([paramName, paramValue]) => {
+    if (paramValue != null) {
+      if (Array.isArray(paramValue)) {
+        paramValue.forEach(val => {
+          if (val != null) {
+            paramValueToName.set(String(val), paramName)
+          }
+        })
+      } else {
+        paramValueToName.set(String(paramValue), paramName)
+      }
+    }
+  })
+  
+  // Replace segments that match param values
+  const normalizedSegments = segments.map(segment => {
+    // Check if this segment matches a param value
+    if (paramValueToName.has(segment)) {
+      return `:${paramValueToName.get(segment)}`
+    }
+    return segment
+  })
+  
+  normalized = '/' + normalizedSegments.join('/')
+  
+  // Ensure it starts with /
+  return normalized.startsWith('/') ? normalized : `/${normalized}`
+}
+
+const curPath = () => (safeWin()?.location?.pathname || '/')
+
+// ===== Enhanced Context Collection =====
+function collectDeviceInfo() {
+  const w = safeWin()
+  if (!w) return {}
+  
+  const nav = w.navigator || {}
+  const screen = w.screen || {}
+  const connection = nav.connection || nav.mozConnection || nav.webkitConnection || null
+  const memory = nav.deviceMemory || null
+  const hardwareConcurrency = nav.hardwareConcurrency || null
+  
+  // Parse user agent for browser/OS
+  const ua = nav.userAgent || ''
+  const browser = parseBrowser(ua)
+  const os = parseOS(ua)
+  
+  // Viewport info
+  const viewport = {
+    width: w.innerWidth || screen.width || 0,
+    height: w.innerHeight || screen.height || 0,
+    devicePixelRatio: w.devicePixelRatio || 1,
+  }
+  
+  // Screen info
+  const screenInfo = {
+    width: screen.width || 0,
+    height: screen.height || 0,
+    availWidth: screen.availWidth || 0,
+    availHeight: screen.availHeight || 0,
+    colorDepth: screen.colorDepth || 0,
+    pixelDepth: screen.pixelDepth || 0,
+  }
+  
+  // Connection info
+  const connectionInfo = connection ? {
+    effectiveType: connection.effectiveType || null,
+    downlink: connection.downlink || null,
+    rtt: connection.rtt || null,
+    saveData: connection.saveData || false,
+  } : null
+  
+  // Memory info (if available)
+  const memoryInfo = memory ? {
+    deviceMemory: memory,
+    hardwareConcurrency: hardwareConcurrency,
+  } : null
+  
+  // Color scheme (dark/light mode)
+  const colorScheme = w.matchMedia && w.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  
+  return {
+    userAgent: ua,
+    language: nav.language || null,
+    languages: nav.languages || [],
+    platform: nav.platform || null,
+    cookieEnabled: nav.cookieEnabled || false,
+    onLine: nav.onLine !== undefined ? nav.onLine : true,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    apiKey,
-    app,
-    normalizedPath: initialNormalizedPath,
-  };
-
-  // Assign config
-  WatchlogRUM.debug = debug;
-  WatchlogRUM.endpoint = endpoint;
-
-  // Register global listeners once
-  if (!window.__watchlog_listeners_registered) {
-    window.addEventListener('error', onErrorGlobal);
-    window.addEventListener('unhandledrejection', onRejectionGlobal);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    window.__watchlog_listeners_registered = true;
+    timezoneOffset: new Date().getTimezoneOffset(),
+    viewport,
+    screen: screenInfo,
+    connection: connectionInfo,
+    memory: memoryInfo,
+    browser,
+    os,
+    colorScheme,
   }
-
-  // Setup flush interval
-  clearInterval(flushTimer);
-  flushTimer = setInterval(() => flush(), flushInterval);
-
-  return true;
 }
 
-function handleBeforeUnload() {
-  const duration = sessionStartTime
-    ? Math.round((Date.now() - sessionStartTime) / 1000)
-    : null;
-  bufferEvent({
-    type: 'session_end',
-    path: window.location.pathname,
-    normalizedPath: meta.normalizedPath,
-    duration,
-  });
-  flush(true);
-  clearInterval(flushTimer);
+function parseBrowser(ua) {
+  if (!ua) return { name: 'unknown', version: null }
+  const uaLower = ua.toLowerCase()
+  
+  if (uaLower.includes('chrome') && !uaLower.includes('edg')) {
+    const match = ua.match(/Chrome\/(\d+)/)
+    return { name: 'Chrome', version: match ? match[1] : null }
+  }
+  if (uaLower.includes('firefox')) {
+    const match = ua.match(/Firefox\/(\d+)/)
+    return { name: 'Firefox', version: match ? match[1] : null }
+  }
+  if (uaLower.includes('safari') && !uaLower.includes('chrome')) {
+    const match = ua.match(/Version\/(\d+)/)
+    return { name: 'Safari', version: match ? match[1] : null }
+  }
+  if (uaLower.includes('edg')) {
+    const match = ua.match(/Edg\/(\d+)/)
+    return { name: 'Edge', version: match ? match[1] : null }
+  }
+  return { name: 'unknown', version: null }
+}
+
+function parseOS(ua) {
+  if (!ua) return { name: 'unknown', version: null }
+  const uaLower = ua.toLowerCase()
+  
+  if (uaLower.includes('windows')) {
+    const match = ua.match(/Windows NT (\d+\.\d+)/)
+    return { name: 'Windows', version: match ? match[1] : null }
+  }
+  if (uaLower.includes('mac os') || uaLower.includes('macos')) {
+    const match = ua.match(/Mac OS X (\d+[._]\d+)/)
+    return { name: 'macOS', version: match ? match[1].replace('_', '.') : null }
+  }
+  if (uaLower.includes('linux')) {
+    return { name: 'Linux', version: null }
+  }
+  if (uaLower.includes('android')) {
+    const match = ua.match(/Android (\d+\.\d+)/)
+    return { name: 'Android', version: match ? match[1] : null }
+  }
+  if (uaLower.includes('iphone') || uaLower.includes('ipad')) {
+    const match = ua.match(/OS (\d+[._]\d+)/)
+    return { name: 'iOS', version: match ? match[1].replace('_', '.') : null }
+  }
+  return { name: 'unknown', version: null }
+}
+
+// ===== Breadcrumbs =====
+function addBreadcrumb(category, message, level = 'info', data = null) {
+  if (!_config.captureBreadcrumbs) return
+  if (_breadcrumbs.length >= _maxBreadcrumbs) {
+    _breadcrumbs.shift()
+  }
+  _breadcrumbs.push({
+    category,
+    message,
+    level, // 'info', 'warning', 'error'
+    data,
+    timestamp: Date.now(),
+  })
+}
+
+// ===== Context & Envelope =====
+function buildContext(path, normalizedPath) {
+  const w = safeWin()
+  const deviceInfo = collectDeviceInfo()
+  
+  return {
+    apiKey: meta.apiKey,
+    app: meta.app,
+    sessionId: meta.sessionId,
+    deviceId: meta.deviceId ?? null,
+    environment: meta.environment ?? null,
+    release: meta.release ?? null,
+    page: {
+      url: w?.location?.href || null,
+      path,
+      normalizedPath,
+      referrer: (typeof document !== 'undefined' ? document.referrer : '') || null,
+      title: (typeof document !== 'undefined' ? document.title : '') || null,
+    },
+    client: deviceInfo,
+    breadcrumbs: _config.captureBreadcrumbs ? _breadcrumbs.slice(-20) : [], // Last 20 breadcrumbs
+  }
+}
+
+function makeEnvelope(type, path, normalizedPath, data) {
+  return {
+    type,
+    ts: Date.now(),
+    seq: ++_seq,
+    context: buildContext(path, normalizedPath),
+    data
+  }
+}
+
+// ===== Buffering =====
+function pushBuffered(env) {
+  // privacy / beforeSend
+  const final = typeof _config.beforeSend === 'function' ? _config.beforeSend(env) : env
+  if (final === null) return
+  buffer.push(final)
+  if (WatchlogRUM.debug) console.log('[Watchlog RUM][react] buffered:', final)
+  if (buffer.length >= 50) flush() // Increased buffer size
 }
 
 function bufferEvent(event) {
-  if (event.type === 'error') {
-    const key = `${event.event}:${event.label}`;
-    if (_recentErrors.has(key)) return;
-    _recentErrors.add(key);
-    setTimeout(() => _recentErrors.delete(key), 3000);
+  if (_sessionDropped) return
+  const { type, path, normalizedPath: eventNormalizedPath, ...rest } = event
+  // Use event's normalizedPath if provided, otherwise fall back to meta.normalizedPath
+  const normalizedPath = eventNormalizedPath || meta.normalizedPath || path || '/'
+
+  if (type === 'error') {
+    const key = `${rest.event || 'err'}:${rest.label || ''}:${normalizedPath || ''}`
+    if (_recentErrors.has(key)) return
+    _recentErrors.add(key)
+    setTimeout(() => _recentErrors.delete(key), 5000) // Increased dedup window
   }
 
-  buffer.push({ ...meta, ...event, timestamp: Date.now() });
-  if (WatchlogRUM.debug) console.log('[Watchlog RUM] Buffered event:', event);
-  if (buffer.length >= 10) flush();
+  let data
+  switch (type) {
+    case 'page_view': 
+      data = { 
+        name: 'page_view',
+        navType: rest?.navType || 'navigate',
+      }; 
+      break
+    case 'session_start': 
+      data = { 
+        name: 'session_start',
+        referrer: rest?.referrer || null,
+      }; 
+      break
+    case 'session_end': 
+      data = { 
+        name: 'session_end', 
+        duration: rest?.duration ?? null 
+      }; 
+      break
+    case 'performance': 
+      data = { 
+        name: 'performance', 
+        metrics: rest?.metrics || {},
+        navigation: rest?.navigation || null,
+        paint: rest?.paint || null,
+      }; 
+      break
+    case 'custom': 
+      data = { 
+        name: rest.metric, 
+        value: rest.value ?? 1, 
+        extra: rest.extra ?? null 
+      }; 
+      break
+    case 'error': 
+      data = { 
+        name: rest.event || 'error', 
+        message: rest.label || 'error', 
+        stack: rest.stack || null,
+        source: rest.source || null,
+        filename: rest.filename || null,
+        lineno: rest.lineno || null,
+        colno: rest.colno || null,
+        component: rest.component || null,
+        props: rest.props || null,
+      }; 
+      break
+    case 'network': 
+      data = { 
+        method: rest.method, 
+        url: rest.url, 
+        status: rest.status, 
+        ok: rest.ok, 
+        duration: rest.duration,
+        requestSize: rest.requestSize ?? null,
+        responseSize: rest.responseSize ?? null,
+        transferSize: rest.transferSize ?? null,
+        encodedBodySize: rest.encodedBodySize ?? null,
+        decodedBodySize: rest.decodedBodySize ?? null,
+        timing: rest.timing || null,
+      }; 
+      break
+    case 'resource': 
+      data = { 
+        name: rest.name, 
+        initiator: rest.initiator, 
+        duration: rest.duration,
+        transferSize: rest.transferSize ?? null,
+        encodedBodySize: rest.encodedBodySize ?? null,
+        decodedBodySize: rest.decodedBodySize ?? null,
+        renderBlockingStatus: rest.renderBlockingStatus || null,
+      }; 
+      break
+    case 'longtask': 
+      data = { 
+        duration: rest.duration,
+        startTime: rest.startTime || null,
+      }; 
+      break
+    case 'web_vital': 
+      data = { 
+        name: rest.name, 
+        value: rest.value,
+        rating: rest.rating || null,
+        id: rest.id || null,
+        delta: rest.delta || null,
+      }; 
+      break
+    case 'interaction':
+      data = {
+        type: rest.interactionType, // 'click', 'scroll', 'input', 'submit'
+        target: rest.target || null,
+        value: rest.value || null,
+      }
+      break
+    default: 
+      data = { ...rest }
+  }
+
+  const env = makeEnvelope(type, path, normalizedPath, data)
+  pushBuffered(env)
 }
 
-function custom(metric, value = 1) {
-  if (typeof metric !== 'string') return;
-  const path = window.location.pathname;
-  const normalizedPath = meta.normalizedPath;
-  bufferEvent({ type: 'custom', metric, value, path, normalizedPath });
-  flush();
-}
-
-function flush(sync = false) {
-  if (!buffer.length) return;
-  const events = buffer.splice(0, buffer.length);
-  const payload = JSON.stringify(events);
+// ===== Enhanced Performance Capture =====
+function capturePerformance(pathname, normalizedPath) {
+  const w = safeWin()
+  if (!w || !w.performance) return
   try {
-    if (sync && navigator.sendBeacon) {
-      navigator.sendBeacon(WatchlogRUM.endpoint, payload);
-    } else if (sync) {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', WatchlogRUM.endpoint, false);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.send(payload);
+    const nav = w.performance.getEntriesByType?.('navigation')?.[0]
+    const paint = w.performance.getEntriesByType?.('paint') || []
+    
+    let metrics = {}
+    let navigation = null
+    let paintMetrics = {}
+    
+    if (nav) {
+      // Navigation Timing API
+      metrics = {
+        ttfb: Math.round(nav.responseStart - nav.requestStart),
+        domLoad: Math.round(nav.domContentLoadedEventEnd - nav.startTime),
+        load: Math.round(nav.loadEventEnd - nav.startTime),
+        domInteractive: Math.round(nav.domInteractive - nav.startTime),
+        domComplete: Math.round(nav.domComplete - nav.startTime),
+      }
+      
+      navigation = {
+        type: nav.type || 'navigate',
+        redirect: Math.round(nav.redirectEnd - nav.redirectStart),
+        dns: Math.round(nav.domainLookupEnd - nav.domainLookupStart),
+        tcp: Math.round(nav.connectEnd - nav.connectStart),
+        request: Math.round(nav.responseStart - nav.requestStart),
+        response: Math.round(nav.responseEnd - nav.responseStart),
+        processing: Math.round(nav.domComplete - nav.domInteractive),
+        load: Math.round(nav.loadEventEnd - nav.loadEventStart),
+      }
     } else {
-      fetch(WatchlogRUM.endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-      });
+      // Fallback to legacy timing API
+      const t = w.performance.timing
+      if (t && t.navigationStart > 0) {
+        metrics = {
+          ttfb: t.responseStart - t.requestStart,
+          domLoad: t.domContentLoadedEventEnd - t.navigationStart,
+          load: t.loadEventEnd - t.navigationStart,
+          domInteractive: t.domInteractive - t.navigationStart,
+          domComplete: t.domComplete - t.navigationStart,
+        }
+        
+        navigation = {
+          type: 'navigate',
+          redirect: t.redirectEnd - t.redirectStart,
+          dns: t.domainLookupEnd - t.domainLookupStart,
+          tcp: t.connectEnd - t.connectStart,
+          request: t.responseStart - t.requestStart,
+          response: t.responseEnd - t.responseStart,
+          processing: t.domComplete - t.domInteractive,
+          load: t.loadEventEnd - t.loadEventStart,
+        }
+      }
+    }
+    
+    // Paint Timing API
+    paint.forEach(entry => {
+      if (entry.name === 'first-paint') {
+        paintMetrics.fp = Math.round(entry.startTime)
+      } else if (entry.name === 'first-contentful-paint') {
+        paintMetrics.fcp = Math.round(entry.startTime)
+      }
+    })
+    
+    if (Object.keys(metrics).length > 0 || Object.keys(paintMetrics).length > 0) {
+      bufferEvent({
+        type: 'performance',
+        metrics,
+        navigation,
+        paint: Object.keys(paintMetrics).length > 0 ? paintMetrics : null,
+        path: pathname,
+        normalizedPath
+      })
     }
   } catch (err) {
-    if (WatchlogRUM.debug) console.warn('[Watchlog RUM] Flush error:', err);
+    if (WatchlogRUM.debug) console.warn('[Watchlog RUM] Performance capture error:', err)
   }
 }
 
-// Export core SDK
-const WatchlogRUM = {
+// ===== Global/unload handlers =====
+function handleBeforeUnload() {
+  const w = safeWin()
+  if (!w) return
+  const duration = sessionStartTime ? Math.round((Date.now() - sessionStartTime) / 1000) : null
+  bufferEvent({
+    type: 'session_end',
+    path: w.location?.pathname || '/',
+    normalizedPath: meta.normalizedPath,
+    duration,
+  })
+  flush(true)
+  clearInterval(flushTimer)
+}
+
+function handlePageHide() {
+  // iOS/Safari-friendly
+  flush(true)
+}
+
+function onErrorGlobal(e) {
+  const w = safeWin()
+  addBreadcrumb('error', e?.message || 'Uncaught error', 'error', {
+    filename: e?.filename,
+    lineno: e?.lineno,
+    colno: e?.colno,
+  })
+  
+  bufferEvent({
+    type: 'error',
+    event: 'window_error',
+    label: e?.message || 'error',
+    stack: e?.error?.stack,
+    source: e?.filename || null,
+    filename: e?.filename || null,
+    lineno: e?.lineno || null,
+    colno: e?.colno || null,
+    path: w?.location?.pathname || '/',
+    normalizedPath: meta.normalizedPath,
+  })
+}
+
+function onRejectionGlobal(e) {
+  const w = safeWin()
+  const reason = e?.reason
+  const message = reason?.message || String(reason || 'Unhandled promise rejection')
+  
+  addBreadcrumb('error', message, 'error', {
+    reason: String(reason),
+  })
+  
+  bufferEvent({
+    type: 'error',
+    event: 'unhandled_promise',
+    label: message,
+    stack: reason?.stack || null,
+    path: w?.location?.pathname || '/',
+    normalizedPath: meta.normalizedPath,
+  })
+}
+
+// ===== Observers =====
+function observeResources() {
+  const w = safeWin()
+  if (!w || !('PerformanceObserver' in w) || _resObserver) return
+  try {
+    _resObserver = new w.PerformanceObserver((list) => {
+      list.getEntries().forEach((entry) => {
+        // ignore fetch/xhr (network separately)
+        const it = entry.initiatorType
+        if (!it || it === 'fetch' || it === 'xmlhttprequest') return
+        
+        bufferEvent({
+          type: 'resource',
+          name: entry.name,
+          initiator: it,
+          duration: Math.round(entry.duration),
+          transferSize: entry.transferSize || null,
+          encodedBodySize: entry.encodedBodySize || null,
+          decodedBodySize: entry.decodedBodySize || null,
+          renderBlockingStatus: entry.renderBlockingStatus || null,
+          path: curPath(),
+          normalizedPath: meta.normalizedPath,
+        })
+      })
+    })
+    _resObserver.observe({ entryTypes: ['resource'] })
+  } catch { /* ignore */ }
+}
+
+function observeLongTasks() {
+  const w = safeWin()
+  if (!_config.captureLongTasks || !w || !('PerformanceObserver' in w) || _ltObserver) return
+  try {
+    _ltObserver = new w.PerformanceObserver((list) => {
+      list.getEntries().forEach((e) => {
+        bufferEvent({
+          type: 'longtask',
+          duration: Math.round(e.duration),
+          startTime: Math.round(e.startTime),
+          path: curPath(),
+          normalizedPath: meta.normalizedPath,
+        })
+      })
+    })
+    _ltObserver.observe({ type: 'longtask', buffered: true })
+  } catch { /* ignore */ }
+}
+
+function observePaint() {
+  const w = safeWin()
+  if (!w || !('PerformanceObserver' in w) || _paintObserver) return
+  try {
+    _paintObserver = new w.PerformanceObserver((list) => {
+      list.getEntries().forEach((entry) => {
+        if (entry.name === 'first-paint' || entry.name === 'first-contentful-paint') {
+          bufferEvent({
+            type: 'web_vital',
+            name: entry.name === 'first-paint' ? 'FP' : 'FCP',
+            value: Math.round(entry.startTime),
+            path: curPath(),
+            normalizedPath: meta.normalizedPath,
+          })
+        }
+      })
+    })
+    _paintObserver.observe({ entryTypes: ['paint'] })
+  } catch { /* ignore */ }
+}
+
+async function installWebVitals() {
+  if (!_config.enableWebVitals) return
+  try {
+    const { onCLS, onLCP, onINP, onTTFB, onFID } = await import('web-vitals')
+    const wrap = (name) => (metric) => {
+      bufferEvent({
+        type: 'web_vital',
+        name,
+        value: Math.round(metric.value),
+        rating: metric.rating || null,
+        id: metric.id || null,
+        delta: metric.delta || null,
+        path: curPath(),
+        normalizedPath: meta.normalizedPath,
+      })
+    }
+    // CLS: Cumulative Layout Shift - may take time to collect
+    onCLS(wrap('CLS'), { reportAllChanges: true })
+    // LCP: Largest Contentful Paint
+    onLCP(wrap('LCP'))
+    // INP: Interaction to Next Paint - requires user interaction
+    onINP(wrap('INP'), { reportAllChanges: true })
+    // TTFB: Time to First Byte
+    onTTFB(wrap('TTFB'))
+    // FID is deprecated but still useful
+    if (onFID) onFID(wrap('FID'))
+  } catch {
+    // web-vitals not installed; ignore
+  }
+}
+
+// ===== User Interaction Tracking =====
+function installUserInteractions() {
+  const w = safeWin()
+  if (!_config.captureUserInteractions || !w || !w.document) return
+  
+  const sample = () => Math.random() < (_config.interactionSampleRate ?? 0.1)
+  
+  // Click tracking
+  const clickHandler = (e) => {
+    if (!sample()) return
+    const target = e.target
+    const tagName = target?.tagName?.toLowerCase() || 'unknown'
+    const id = target?.id || null
+    const className = target?.className || null
+    
+    addBreadcrumb('user', `Clicked ${tagName}`, 'info', {
+      tagName,
+      id,
+      className: typeof className === 'string' ? className : null,
+    })
+    
+    bufferEvent({
+      type: 'interaction',
+      interactionType: 'click',
+      target: tagName,
+      value: id || className || null,
+      path: curPath(),
+      normalizedPath: meta.normalizedPath,
+    })
+  }
+  
+  // Scroll depth tracking
+  let maxScroll = 0
+  const scrollHandler = () => {
+    if (!sample()) return
+    const scrollTop = w.pageYOffset || w.document?.documentElement?.scrollTop || 0
+    const scrollHeight = w.document?.documentElement?.scrollHeight || 0
+    const clientHeight = w.innerHeight || 0
+    const scrollPercent = scrollHeight > 0 ? Math.round((scrollTop + clientHeight) / scrollHeight * 100) : 0
+    
+    if (scrollPercent > maxScroll) {
+      maxScroll = scrollPercent
+      if (scrollPercent % 25 === 0) { // Track at 25%, 50%, 75%, 100%
+        bufferEvent({
+          type: 'interaction',
+          interactionType: 'scroll',
+          target: 'page',
+          value: scrollPercent,
+          path: curPath(),
+          normalizedPath: meta.normalizedPath,
+        })
+      }
+    }
+  }
+  
+  // Form submission tracking
+  const submitHandler = (e) => {
+    if (!sample()) return
+    const form = e.target
+    const formId = form?.id || null
+    const formAction = form?.action || null
+    
+    addBreadcrumb('user', 'Form submitted', 'info', {
+      formId,
+      formAction,
+    })
+    
+    bufferEvent({
+      type: 'interaction',
+      interactionType: 'submit',
+      target: 'form',
+      value: formId || formAction || null,
+      path: curPath(),
+      normalizedPath: meta.normalizedPath,
+    })
+  }
+  
+  w.document.addEventListener('click', clickHandler, true)
+  w.addEventListener('scroll', scrollHandler, { passive: true })
+  w.document.addEventListener('submit', submitHandler, true)
+  
+  _interactionListeners.push(
+    () => w.document.removeEventListener('click', clickHandler, true),
+    () => w.removeEventListener('scroll', scrollHandler),
+    () => w.document.removeEventListener('submit', submitHandler, true)
+  )
+}
+
+// ===== Network (fetch / XHR) =====
+function _sampleNetwork() {
+  return Math.random() < (_config.networkSampleRate ?? 0.1)
+}
+
+function patchFetch() {
+  const w = safeWin()
+  if (!_config.captureFetch || _fetchPatched || !w || typeof w.fetch !== 'function') return
+  const _orig = w.fetch.bind(w)
+
+  w.fetch = async (input, init = {}) => {
+    const start = now()
+    let method = (init.method || 'GET').toUpperCase()
+    let url = typeof input === 'string' ? input : (input?.url || '')
+    let send = _sampleNetwork()
+    
+    // Estimate request size
+    let requestSize = 0
+    if (init.body) {
+      if (typeof init.body === 'string') requestSize = new Blob([init.body]).size
+      else if (init.body instanceof FormData) {
+        // Rough estimate for FormData
+        for (const pair of init.body.entries()) {
+          requestSize += JSON.stringify(pair).length
+        }
+      } else if (init.body instanceof Blob) requestSize = init.body.size
+      else if (init.body instanceof ArrayBuffer) requestSize = init.body.byteLength
+      else requestSize = JSON.stringify(init.body).length
+    }
+
+    try {
+      const res = await _orig(input, init)
+      const end = now()
+      if (send) {
+        // Try to get transferSize from performance entries
+        let transferSize = null
+        let encodedBodySize = null
+        let decodedBodySize = null
+        let timing = null
+        
+        try {
+          const entries = w.performance.getEntriesByName(res.url || url, 'resource')
+          if (entries && entries.length) {
+            const last = entries[entries.length - 1]
+            transferSize = last.transferSize || null
+            encodedBodySize = last.encodedBodySize || null
+            decodedBodySize = last.decodedBodySize || null
+            
+            // Timing breakdown
+            if (last.duration) {
+              timing = {
+                dns: last.domainLookupEnd - last.domainLookupStart,
+                tcp: last.connectEnd - last.connectStart,
+                request: last.responseStart - last.requestStart,
+                response: last.responseEnd - last.responseStart,
+                total: last.duration,
+              }
+            }
+          }
+        } catch { /* ignore */ }
+        
+        bufferEvent({
+          type: 'network',
+          method,
+          url: res.url || url,
+          status: res.status,
+          ok: res.ok,
+          duration: Math.round(end - start),
+          requestSize: requestSize > 0 ? requestSize : null,
+          responseSize: decodedBodySize || transferSize || null,
+          transferSize,
+          encodedBodySize,
+          decodedBodySize,
+          timing,
+          path: curPath(),
+          normalizedPath: meta.normalizedPath
+        })
+      }
+      return res
+    } catch (err) {
+      const end = now()
+      if (send) {
+        bufferEvent({
+          type: 'network',
+          method,
+          url,
+          status: 0,
+          ok: false,
+          duration: Math.round(end - start),
+          requestSize: requestSize > 0 ? requestSize : null,
+          responseSize: null,
+          transferSize: null,
+          path: curPath(),
+          normalizedPath: meta.normalizedPath
+        })
+      }
+      throw err
+    }
+  }
+
+  _fetchPatched = true
+}
+
+function patchXHR() {
+  const w = safeWin()
+  if (!_config.captureXHR || _xhrPatched || !w || !w.XMLHttpRequest) return
+
+  const X = w.XMLHttpRequest
+  function XR() { const xhr = new X(); return xhr }
+  XR.prototype = X.prototype
+
+  const _open = X.prototype.open
+  const _send = X.prototype.send
+
+  X.prototype.open = function (method, url, ...rest) {
+    this.__wl_method = (method || 'GET').toUpperCase()
+    this.__wl_url = String(url || '')
+    this.__wl_startTime = now()
+    return _open.call(this, method, url, ...rest)
+  }
+
+  X.prototype.send = function (body) {
+    const start = this.__wl_startTime || now()
+    const send = _sampleNetwork()
+    const method = this.__wl_method || 'GET'
+    const url = this.__wl_url || ''
+    
+    // Estimate request size
+    let requestSize = 0
+    if (body) {
+      if (typeof body === 'string') requestSize = new Blob([body]).size
+      else if (body instanceof FormData) {
+        for (const pair of body.entries()) {
+          requestSize += JSON.stringify(pair).length
+        }
+      } else if (body instanceof Blob) requestSize = body.size
+      else if (body instanceof ArrayBuffer) requestSize = body.byteLength
+    }
+    
+    const onDone = () => {
+      if (!send) return
+      const end = now()
+      
+      // Try to get size info from performance entries
+      let transferSize = null
+      let encodedBodySize = null
+      let decodedBodySize = null
+      let timing = null
+      
+      try {
+        const entries = w.performance.getEntriesByName(this.responseURL || url, 'resource')
+        if (entries && entries.length) {
+          const last = entries[entries.length - 1]
+          transferSize = last.transferSize || null
+          encodedBodySize = last.encodedBodySize || null
+          decodedBodySize = last.decodedBodySize || null
+          
+          if (last.duration) {
+            timing = {
+              dns: last.domainLookupEnd - last.domainLookupStart,
+              tcp: last.connectEnd - last.connectStart,
+              request: last.responseStart - last.requestStart,
+              response: last.responseEnd - last.responseStart,
+              total: last.duration,
+            }
+          }
+        }
+      } catch { /* ignore */ }
+      
+      bufferEvent({
+        type: 'network',
+        method,
+        url: this.responseURL || url,
+        status: this.status,
+        ok: (this.status >= 200 && this.status < 400),
+        duration: Math.round(end - start),
+        requestSize: requestSize > 0 ? requestSize : null,
+        responseSize: decodedBodySize || transferSize || null,
+        transferSize,
+        encodedBodySize,
+        decodedBodySize,
+        timing,
+        path: curPath(),
+        normalizedPath: meta.normalizedPath
+      })
+    }
+    this.addEventListener('load', onDone)
+    this.addEventListener('error', onDone)
+    this.addEventListener('abort', onDone)
+    return _send.call(this, body)
+  }
+
+  _xhrPatched = true
+}
+
+// ===== Transport =====
+function flush(sync = false) {
+  if (!buffer.length) return
+  const events = buffer.splice(0, buffer.length)
+  const w = safeWin()
+  if (!w) return
+
+  const wrapper = {
+    apiKey: meta.apiKey,
+    app: meta.app,
+    sdk: 'watchlog-rum-react',
+    version: '0.3.0',
+    sentAt: Date.now(),
+    sessionId: meta.sessionId,
+    deviceId: meta.deviceId,
+    environment: meta.environment || null,
+    release: meta.release || null,
+    events
+  }
+  const body = JSON.stringify(wrapper)
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Watchlog-Key': meta.apiKey
+    }
+
+    if (sync && w.navigator?.sendBeacon) {
+      const blob = new Blob([body], { type: 'application/json' })
+      w.navigator.sendBeacon(WatchlogRUM.endpoint, blob)
+    } else if (sync) {
+      const xhr = new w.XMLHttpRequest()
+      xhr.open('POST', WatchlogRUM.endpoint, false)
+      xhr.setRequestHeader('Content-Type', 'application/json')
+      xhr.setRequestHeader('X-Watchlog-Key', meta.apiKey)
+      xhr.send(body)
+    } else {
+      w.fetch(WatchlogRUM.endpoint, { method: 'POST', headers, body, keepalive: true })
+        .catch(err => {
+          if (WatchlogRUM.debug) console.warn('[Watchlog RUM][react] flush error:', err)
+        })
+    }
+  } catch (err) {
+    if (WatchlogRUM.debug) console.warn('[Watchlog RUM][react] flush error:', err)
+  }
+}
+
+// ===== Core SDK =====
+function registerListeners(config) {
+  const w = safeWin()
+  if (!w) return false
+
+  // merge config with defaults
+  _config = { ..._config, ...config }
+  _maxBreadcrumbs = _config.maxBreadcrumbs || 100
+
+  const {
+    apiKey, endpoint, app, debug, flushInterval,
+    environment, release, sampleRate
+  } = _config
+
+  if (!apiKey || !endpoint || !app) {
+    console.warn('[Watchlog RUM] apiKey, endpoint, and app are required.')
+    return false
+  }
+
+  // session sampling with maximum limit to prevent server overload
+  // Maximum allowed sample rate is 0.5 (50%) to protect server resources
+  const MAX_SAMPLE_RATE = 0.5
+  const effectiveSampleRate = (typeof sampleRate === 'number' && sampleRate >= 0 && sampleRate <= 1)
+    ? Math.min(sampleRate, MAX_SAMPLE_RATE)
+    : MAX_SAMPLE_RATE
+  
+  if (sampleRate > MAX_SAMPLE_RATE && WatchlogRUM.debug) {
+    console.warn(`[Watchlog RUM] sampleRate (${sampleRate}) exceeds maximum allowed (${MAX_SAMPLE_RATE}). Using ${MAX_SAMPLE_RATE} instead.`)
+  }
+  
+  _sessionDropped = Math.random() > effectiveSampleRate
+
+  let deviceId = null
+  try {
+    deviceId = w.localStorage.getItem('watchlog_device_id')
+    if (!deviceId) {
+      deviceId = 'dev-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36)
+      w.localStorage.setItem('watchlog_device_id', deviceId)
+    }
+  } catch { /* ignore */ }
+
+  const initialNormalizedPath = meta.normalizedPath || w.location?.pathname || '/'
+
+  meta = {
+    apiKey,
+    app,
+    environment,
+    release,
+    sessionId: 'sess-' + Math.random().toString(36).substring(2, 15) + '-' + Date.now().toString(36),
+    deviceId,
+    normalizedPath: initialNormalizedPath,
+  }
+
+  WatchlogRUM.debug = !!debug
+  WatchlogRUM.endpoint = endpoint
+
+  _sdkInitialized = true
+  
+  if (!_listenersInstalled) {
+    w.addEventListener('error', onErrorGlobal)
+    w.addEventListener('unhandledrejection', onRejectionGlobal)
+    w.addEventListener('beforeunload', handleBeforeUnload)
+    w.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') handlePageHide() })
+    w.addEventListener('pagehide', handlePageHide)
+    _listenersInstalled = true
+  }
+
+  // observers / patches
+  observeResources()
+  observeLongTasks()
+  observePaint()
+  installWebVitals().catch(() => {})
+  patchFetch()
+  patchXHR()
+  installUserInteractions()
+
+  clearInterval(flushTimer)
+  flushTimer = setInterval(() => flush(), Number(flushInterval) || 10000)
+
+  return true
+}
+
+// ===== Public API =====
+function custom(metric, value = 1, extra = null) {
+  if (typeof metric !== 'string' || _sessionDropped) return
+  const path = curPath()
+  addBreadcrumb('custom', metric, 'info', { value, extra })
+  bufferEvent({ type: 'custom', metric, value, extra, path, normalizedPath: meta.normalizedPath })
+  flush()
+}
+
+function captureError(error, context = {}) {
+  if (_sessionDropped) return
+  const w = safeWin()
+  const path = curPath()
+  
+  let message = 'Unknown error'
+  let stack = null
+  let component = null
+  let props = null
+  
+  if (error instanceof Error) {
+    message = error.message
+    stack = error.stack
+  } else if (typeof error === 'string') {
+    message = error
+  }
+  
+  // React component error context
+  if (context.component) {
+    component = context.component.displayName || context.component.name || 'UnknownComponent'
+    props = context.props || null
+  }
+  
+  addBreadcrumb('error', message, 'error', {
+    component,
+    stack: stack?.slice(0, 500), // Truncate long stacks
+  })
+  
+  bufferEvent({
+    type: 'error',
+    event: 'captured',
+    label: message,
+    stack,
+    component,
+    props,
+    path,
+    normalizedPath: meta.normalizedPath,
+  })
+}
+
+export const WatchlogRUM = {
   init: registerListeners,
   setNormalizedPath: (p) => (meta.normalizedPath = p),
   bufferEvent,
   custom,
+  captureError,
+  addBreadcrumb,
   flush,
-};
+  debug: false,
+  endpoint: '',
+}
 
-// React hook for SPA tracking
+// ===== React Hook =====
 export function useWatchlogRUM(config) {
-  const location = useLocation();
-  const matches = useMatches();
-  const params = useParams();
-  const initialized = useRef(false);
+  // Only use router hooks if we're inside a Router context
+  // This prevents errors when hook is used outside Router
+  let location, matches
+  try {
+    location = useLocation()
+    matches = useMatches()
+  } catch (e) {
+    // If not in Router context, return basic object
+    if (!_sdkInitialized && config) {
+      registerListeners(config)
+    }
+    return {
+      rum: WatchlogRUM,
+      custom: WatchlogRUM.custom,
+      captureError: WatchlogRUM.captureError,
+      flush: WatchlogRUM.flush,
+      setNormalizedPath: WatchlogRUM.setNormalizedPath,
+    }
+  }
 
-  // compute normalizedPath synchronously
-  let routePath = matches.length
-    ? matches[matches.length - 1]?.route?.path || location.pathname
-    : location.pathname;
-  Object.entries(params).forEach(([k, v]) => {
-    routePath = routePath.replace(v, `:${k}`);
-  });
-  const normalizedPath = routePath.startsWith('/')
-    ? routePath
-    : `/${routePath}`;
-  // update meta for everything that follows
-  meta.normalizedPath = normalizedPath;
+  const initialized = useRef(false)
 
-  // init SDK once
+  // Get params from the most specific match (last one in matches array)
+  // This works with both BrowserRouter and RouterProvider
+  // matches array contains all matched routes, with the most specific one last
+  const lastMatch = matches && matches.length > 0 ? matches[matches.length - 1] : null
+  const effectiveParams = lastMatch?.params || {}
+  
+  // compute normalizedPath synchronously - must be computed on every render
+  const normalizedPath = computeNormalizedPath(location, matches, effectiveParams)
+  // Update meta.normalizedPath whenever it changes
+  if (meta.normalizedPath !== normalizedPath) {
+    meta.normalizedPath = normalizedPath
+  }
+
+  // init SDK once (only if config is provided and SDK not already initialized)
   useEffect(() => {
-    registerListeners(config);
-  }, []);
+    if (config && !_sdkInitialized) {
+      registerListeners(config)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // page_view & error tracking per route
   useEffect(() => {
-    const pathname = location.pathname;
+    const pathname = location.pathname
+    // Get params from the most specific match (works with both BrowserRouter and RouterProvider)
+    const lastMatch = matches && matches.length > 0 ? matches[matches.length - 1] : null
+    const currentParams = lastMatch?.params || {}
+    // Recompute normalizedPath inside effect to ensure it's fresh
+    const currentNormalizedPath = computeNormalizedPath(location, matches, currentParams)
+    meta.normalizedPath = currentNormalizedPath
 
     // first load
     if (!initialized.current) {
-      sessionStartTime = Date.now();
-      bufferEvent({ type: 'session_start', path: pathname, normalizedPath });
-      bufferEvent({ type: 'page_view', path: pathname, normalizedPath });
-      capturePerformance(pathname, normalizedPath);
-      initialized.current = true;
-      lastPageViewPath = normalizedPath;
-      return;
+      sessionStartTime = Date.now()
+      const referrer = document.referrer || null
+      
+      addBreadcrumb('navigation', 'Session started', 'info', { path: currentNormalizedPath })
+      
+      bufferEvent({ type: 'session_start', path: pathname, normalizedPath: currentNormalizedPath, referrer })
+      bufferEvent({ type: 'page_view', path: pathname, normalizedPath: currentNormalizedPath, navType: 'navigate' })
+      capturePerformance(pathname, currentNormalizedPath)
+      initialized.current = true
+      lastPageViewPath = currentNormalizedPath
+      return
     }
 
     // on route change
-    if (normalizedPath !== lastPageViewPath) {
-      bufferEvent({ type: 'page_view', path: pathname, normalizedPath });
-      capturePerformance(pathname, normalizedPath);
-      lastPageViewPath = normalizedPath;
+    if (currentNormalizedPath !== lastPageViewPath) {
+      addBreadcrumb('navigation', `Navigated to ${currentNormalizedPath}`, 'info')
+      bufferEvent({ type: 'page_view', path: pathname, normalizedPath: currentNormalizedPath, navType: 'navigate' })
+      capturePerformance(pathname, currentNormalizedPath)
+      lastPageViewPath = currentNormalizedPath
     }
 
-    // **per-route error handlers****
+    // per-route error handlers
     const handleError = (e) => {
-      console.log(normalizedPath)
       bufferEvent({
         type: 'error',
         event: 'window_error',
-        label: e.message || 'error',
-        stack: e.error?.stack,
+        label: e?.message || 'error',
+        stack: e?.error?.stack,
+        source: e?.filename || null,
+        filename: e?.filename || null,
+        lineno: e?.lineno || null,
+        colno: e?.colno || null,
         path: pathname,
-        normalizedPath,
-      });
-    };
+        normalizedPath: currentNormalizedPath,
+      })
+    }
     const handleRejection = (e) => {
       bufferEvent({
         type: 'error',
         event: 'unhandled_promise',
-        label: e.reason?.message || String(e.reason),
+        label: e?.reason?.message || String(e?.reason),
+        stack: e?.reason?.stack || null,
         path: pathname,
-        normalizedPath,
-      });
-    };
-    window.addEventListener('error', handleError);
-    window.addEventListener('unhandledrejection', handleRejection);
+        normalizedPath: currentNormalizedPath,
+      })
+    }
+    window.addEventListener('error', handleError)
+    window.addEventListener('unhandledrejection', handleRejection)
     return () => {
-      window.removeEventListener('error', handleError);
-      window.removeEventListener('unhandledrejection', handleRejection);
-    };
-  }, [location.pathname]);
+      window.removeEventListener('error', handleError)
+      window.removeEventListener('unhandledrejection', handleRejection)
+      // Clean up interaction listeners
+      _interactionListeners.forEach(cleanup => cleanup())
+      _interactionListeners = []
+    }
+  }, [location.pathname, JSON.stringify(matches)])
+
+  return {
+    rum: WatchlogRUM,
+    custom: WatchlogRUM.custom,
+    captureError: WatchlogRUM.captureError,
+    flush: WatchlogRUM.flush,
+    setNormalizedPath: WatchlogRUM.setNormalizedPath,
+  }
 }
 
-export default WatchlogRUM;
+export default WatchlogRUM
