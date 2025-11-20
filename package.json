@@ -1,6 +1,6 @@
 {
   "name": "watchlog-react-rum",
-  "version": "0.3.0",
+  "version": "1.2.0",
   "description": "Watchlog Real User Monitoring (RUM) for React + React Router v6",
   "main": "index.js",
   "module": "index.js",

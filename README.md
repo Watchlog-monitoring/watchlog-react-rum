@@ -69,13 +69,42 @@ npm install web-vitals
 For the most accurate route pattern detection (like Datadog), use the wrapped router functions from `watchlog-react-rum/react-router-v6`:
 
 ```jsx
-// src/main.jsx or src/App.jsx
+// src/main.jsx
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { RouterProvider } from 'react-router-dom'
 import { createBrowserRouter } from 'watchlog-react-rum/react-router-v6'
 import { useWatchlogRUM } from 'watchlog-react-rum'
+import App from './App'
+import Home from './pages/Home'
+import UserDetail from './pages/UserDetail'
+import PostDetail from './pages/PostDetail'
 
+// Create router with route definitions (for accurate route pattern extraction)
+// IMPORTANT: Use createBrowserRouter from 'watchlog-react-rum/react-router-v6'
+// This ensures route patterns are captured for accurate normalization
+const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <App />,
+    children: [
+      {
+        index: true,
+        element: <Home />,
+      },
+      {
+        path: 'users/:userId', // This exact pattern will be used for normalization
+        element: <UserDetail />,
+      },
+      {
+        path: 'posts/:postId',
+        element: <PostDetail />,
+      },
+    ],
+  },
+])
+
+// Root component to initialize RUM tracking
 function Root() {
   useWatchlogRUM({
     apiKey: 'YOUR_API_KEY',
@@ -102,25 +131,14 @@ function Root() {
     }
   })
 
-  const router = createBrowserRouter([
-    {
-      path: '/',
-      element: <Home />,
-    },
-    {
-      path: '/users/:userId', // This exact pattern will be used for normalization
-      element: <UserDetail />,
-    },
-    {
-      path: '/posts/:postId',
-      element: <PostDetail />,
-    },
-  ])
-
   return <RouterProvider router={router} />
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<Root />)
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <Root />
+  </React.StrictMode>
+)
 ```
 
 **Important**: Using the wrapped `createBrowserRouter` from `watchlog-react-rum/react-router-v6` ensures that route patterns (like `/users/:userId` or `/users/:uuid`) are extracted directly from your route definitions, providing the most accurate normalization.
