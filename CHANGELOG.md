@@ -1,3 +1,15 @@
+# [1.2.0](https://github.com/Watchlog-monitoring/watchlog-react-rum/compare/1.1.4...1.2.0) (2025-11-20)
+
+
+### Bug Fixes
+
+* react router v6 ([c8a7cc7](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/c8a7cc71b601b14e795ff335ce1a2af39281e699))
+
+
+### Features
+
+* react router v6 handle and update usage ([03b34c5](https://github.com/Watchlog-monitoring/watchlog-react-rum/commit/03b34c5456a6c9baee8345d3c8da7e0c52176b33))
+
 # Changelog
 
 All notable changes to `watchlog-react-rum` will be documented in this file.
